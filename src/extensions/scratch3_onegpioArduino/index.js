@@ -1,0 +1,729 @@
+
+
+// Boiler plate from the Scratch Team
+const ArgumentType = require('../../extension-support/argument-type');
+const BlockType = require('../../extension-support/block-type');
+const formatMessage = require('format-message');
+
+
+// The following are constants used within the extension
+
+// Digital Modes
+const DIGITAL_INPUT = 1;
+const DIGITAL_OUTPUT = 2;
+const PWM = 3;
+const SERVO = 4;
+const TONE = 5;
+const SONAR = 6;
+const ANALOG_INPUT = 7;
+
+require('sweetalert');
+
+// an array to save the current pin mode
+// this is common to all board types since it contains enough
+// entries for all the boards.
+// Modes are listed above - initialize to invalid mode of -1
+let pin_modes = new Array(30).fill(-1);
+
+// has an websocket message already been received
+let alerted = false;
+
+let connection_pending = false;
+
+// general outgoing websocket message holder
+let msg = null;
+
+// the pin assigned to the sonar trigger
+// initially set to -1, an illegal value
+let sonar_report_pin = -1;
+
+// flag to indicate if the user connected to a board
+let connected = false;
+
+// arrays to hold input values
+let digital_inputs = new Array(32);
+let analog_inputs = new Array(8);
+
+// flag to indicate if a websocket connect was
+// ever attempted.
+let connect_attempt = false;
+
+// an array to buffer operations until socket is opened
+let wait_open = [];
+
+let the_locale = null;
+
+// common
+const FormDigitalWrite = {
+    'pt-br': 'Escrever Pino Digital [PIN]como[ON_OFF]',
+    'pt': 'Escrever Pino Digital[PIN]como[ON_OFF]',
+    'en': 'Write DIGITAL Pin [PIN] [ON_OFF]',
+    'fr': 'Mettre la pin numérique[PIN]à[ON_OFF]',
+    'zh-tw': '腳位[PIN]數位輸出[ON_OFF]',
+    'zh-cn': '引脚[PIN]数字输出[ON_OFF]',
+    'pl': 'Ustaw cyfrowy Pin [PIN] na [ON_OFF]',
+    'de': 'Setze digitalen Pin [PIN] [ON_OFF]',
+    'ja': 'デジタル・ピン [PIN] に [ON_OFF] を出力',
+};
+
+const FormPwmWrite = {
+    'pt-br': 'Escrever Pino PWM[PIN]com[VALUE]%',
+    'pt': 'Escrever Pino PWM[PIN]com[VALUE]%',
+    'en': 'Write PWM Pin [PIN] [VALUE]%',
+    'fr': 'Mettre la pin PWM[PIN]à[VALUE]%',
+    'zh-tw': '腳位[PIN]類比輸出[VALUE]%',
+    'zh-cn': '引脚[PIN]模拟输出[VALUE]%',
+    'pl': 'Ustaw PWM Pin [PIN] na [VALUE]%',
+    'de': 'Setze PWM-Pin [PIN] [VALUE]%',
+    'ja': 'PWM ピン [PIN] に [VALUE]% を出力',
+};
+
+const FormTone = {
+    'pt-br': 'Soar no Pino[PIN]com[FREQ]Hz e[DURATION]ms',
+    'pt': 'Soar no Pino[PIN]com[FREQ]Hz  e[DURATION]ms',
+    'en': 'Tone Pin [PIN] [FREQ] Hz [DURATION] ms',
+    'fr': 'Définir le buzzer sur la pin[PIN]à[FREQ]Hz pendant[DURATION] ms',
+    'zh-tw': '腳位[PIN]播放音調，頻率為[FREQ]赫茲 時間為[DURATION]毫秒',
+    'zh-cn': '引脚[PIN]播放音调，频率为[FREQ]赫兹 时间为[DURATION]毫秒',
+    'pl': 'Ustaw brzęczyk na Pinie [PIN] na [FREQ] Hz i [DURATION] ms%',
+    'de': 'Spiele Ton am Pin [PIN] [FREQ] Hz [DURATION] ms',
+    'ja': '音調ピン [PIN] を [FREQ] Hz [DURATION] ms に',
+};
+
+const FormServo = {
+    'pt-br': 'Mover Servo Motor no[PIN]para[ANGLE]°',
+    'pt': 'Mover Servo Motor no[PIN]para[ANGLE]°',
+    'en': 'Write Servo Pin [PIN] [ANGLE] Deg.',
+    'fr': 'Mettre le servo[PIN]à[ANGLE] Deg.',
+    'zh-tw': '伺服馬達腳位[PIN]轉動角度到[ANGLE]度',
+    'zh-cn': '伺服电机引脚[PIN]转动角度到[ANGLE]度',
+    'pl': 'Ustaw silnik servo na Pinie [PIN] na [ANGLE]°',
+    'de': 'Setze Servo-Pin [PIN] [ANGLE]°',
+    'ja': 'サーボ・ピン [PIN] に [ANGLE] 度を出力',
+};
+
+const FormAnalogRead = {
+    'pt-br': 'Ler Pino Analógico [PIN]',
+    'pt': 'Ler Pino Analógico [PIN]',
+    'en': 'Read Analog Pin [PIN]',
+    'fr': 'Lecture analogique [PIN]',
+    'zh-tw': '讀取類比腳位[PIN]',
+    'zh-cn': '读取模拟引脚[PIN]',
+    'pl': 'Odczytaj analogowy Pin [PIN]',
+    'de': 'Lies analogen Pin [PIN]',
+    'ja': 'アナログ・ピン [PIN] から入力',
+};
+
+const FormDigitalRead = {
+    'pt-br': 'Ler Pino Digital [PIN]',
+    'pt': 'Ler Pino Digital [PIN]',
+    'en': 'Read Digital Pin [PIN]',
+    'fr': 'Lecture numérique [PIN]',
+    'zh-tw': '讀取數位腳位[PIN]',
+    'zh-cn': '读取数字引脚[PIN]',
+    'pl': 'Odczytaj cyfrowy Pin [PIN]',
+    'de': 'Lies digitalen Pin [PIN]',
+    'ja': 'デジタル・ピン [PIN] から入力',
+};
+
+const FormSonarRead = {
+    'pt-br': 'Ler Distância: Sonar em T[TRIGGER_PIN] E[ECHO_PIN]',
+    'pt': 'Ler Distância: Sonar em T[TRIGGER_PIN] E[ECHO_PIN]',
+    'en': 'Read SONAR  T [TRIGGER_PIN]  E [ECHO_PIN]',
+    'fr': 'Distance de lecture : Sonar T [TRIGGER_PIN] E [ECHO_PIN]',
+    'zh-tw': 'HCSR超音波感測器，Echo在腳位[ECHO_PIN] Trig在腳位[TRIGGER_PIN]',
+    'zh-cn': 'HCSR超声波传感器，Echo在引脚[ECHO_PIN] Trig在引脚[TRIGGER_PIN]',
+    'pl': 'Odczytaj odległość: Sonar T [TRIGGER_PIN]  E [ECHO_PIN]',
+    'de': 'Lies Sonar T [TRIGGER_PIN]  E [ECHO_PIN]',
+    'ja': '超音波測距器からトリガ [TRIGGER_PIN] とエコー [ECHO_PIN] で入力',
+};
+
+// ESP-8266 specific
+
+const FormIPBlockE = {
+    'pt-br': 'Endereço IP da placa ESP-8266 [IP_ADDR]',
+    'pt': 'Endereço IP da placa ESP-8266 [IP_ADDR]',
+    'en': 'ESP-8266 IP Address [IP_ADDR]',
+    'fr': "Adresse IP de l'ESP-8266 [IP_ADDR]",
+    'zh-tw': 'ESP-8266 IP 位址[IP_ADDR]',
+    'zh-cn': 'ESP-8266 IP 地址[IP_ADDR]',
+    'pl': 'Adres IP ESP-8266 [IP_ADDR]',
+    'de': 'ESP-8266 IP-Adresse [IP_ADDR]',
+    'ja': 'ESP-8266 の IP アドレスを [IP_ADDR] に',
+};
+
+// Raspbery Pi Specific
+const FormIPBlockR = {
+    'pt-br': 'Endereço IP do RPi [IP_ADDR]',
+    'pt': 'Endereço IP do RPi [IP_ADDR]',
+    'en': 'Remote IP Address [IP_ADDR]',
+    'fr': 'Adresse IP du RPi [IP_ADDR]',
+    'zh-tw': '遠端 IP 位址[IP_ADDR]',
+    'zh-cn': '远程 IP 地址[IP_ADDR]',
+    'pl': 'Adres IP Rasberry Pi [IP_ADDR]',
+    'de': 'IP-Adresse des RPi [IP_ADDR]',
+    'ja': 'ラズパイの IP アドレスを [IP_ADDR] に',
+};
+
+// General Alert
+const FormWSClosed = {
+    'pt-br': "A Conexão do WebSocket está Fechada",
+    'pt': "A Conexão do WebSocket está Fechada",
+    'en': "WebSocket Connection Is Closed.",
+    'fr': "La connexion WebSocket est fermée.",
+    'zh-tw': "網路連線中斷",
+    'zh-cn': "网络连接中断",
+    'pl': "Połączenie WebSocket jest zamknięte.",
+    'de': "WebSocket-Verbindung geschlossen.",
+    'ja': "ウェブソケット接続が切断されています",
+};
+
+// ESP-8266 Alert
+const FormAlrt = {
+    'pt-br': {
+        title: "Atenção",
+        text: "Informe o endereço IP da placa ESP-8266 no bloco apropriado",
+        icon: "info",
+    },
+    'pt': {
+        title: "Atenção",
+        text: "Informe o endereço IP da placa ESP-8266 no bloco apropriado",
+        icon: "info",
+    },
+    'en': {
+        title: "Reminder",
+        text: "Enter the IP Address of the ESP-8266 Into The IP Address Block",
+        icon: "info",
+    },
+    'fr': {
+        title: "Attention",
+        text: "Entrez l'adresse IP de l'ESP-8266 dans le bloc approprié.",
+        icon: "info",
+    },
+    'zh-tw': {
+        title: "提醒",
+        text: "請於 IP 位址積木中輸入 ESP-8266 的 IP 位址",
+        icon: "info",
+    },
+    'zh-cn': {
+        title: "提醒",
+        text: "请于 IP地址积木中输入 ESP-8266 的 IP 地址",
+        icon: "info",
+    },
+    'pl': {
+        title: "Przypomnienie",
+        text: "Wprowadź adres IP ESP-8266 do bloku adresu IP",
+        icon: "info",
+    },
+    'de': {
+        title: "Wichtig",
+        text: "Trage die IP-Adresse des ESP-8266 im Blcok IP-Adresse ein",
+        icon: "info",
+    },
+    'ja': {
+    title: "注意",
+        text: "ESP-8266 の IP アドレスを IP アドレス・ブロックに記入して下さい",
+        icon: "info",
+    },
+};
+
+
+class Scratch3ArduinoOneGPIO {
+    constructor(runtime) {
+        the_locale = this._setLocale();
+        this.runtime = runtime;
+    }
+
+    getInfo() {
+        the_locale = this._setLocale();
+        this.connect();
+
+        return {
+            id: 'onegpioArduino',
+            color1: '#3399ff',
+            color2: '#34B0F7',
+            name: 'Modular',
+            blockIconURI: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgcAAAIHCAYAAAALof87AAAACXBIWXMAAAsTAAALEwEAmpwYAAAF6GlUWHRYTUw6Y29tLmFkb2JlLnhtcAAAAAAAPD94cGFja2V0IGJlZ2luPSLvu78iIGlkPSJXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQiPz4gPHg6eG1wbWV0YSB4bWxuczp4PSJhZG9iZTpuczptZXRhLyIgeDp4bXB0az0iQWRvYmUgWE1QIENvcmUgNi4wLWMwMDYgNzkuMTY0NzUzLCAyMDIxLzAyLzE1LTExOjUyOjEzICAgICAgICAiPiA8cmRmOlJERiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiPiA8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0iIiB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iIHhtbG5zOmRjPSJodHRwOi8vcHVybC5vcmcvZGMvZWxlbWVudHMvMS4xLyIgeG1sbnM6cGhvdG9zaG9wPSJodHRwOi8vbnMuYWRvYmUuY29tL3Bob3Rvc2hvcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RFdnQ9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZUV2ZW50IyIgeG1wOkNyZWF0b3JUb29sPSJBZG9iZSBQaG90b3Nob3AgMjIuMyAoV2luZG93cykiIHhtcDpDcmVhdGVEYXRlPSIyMDIzLTAzLTE1VDE4OjEzOjM1KzA1OjMwIiB4bXA6TW9kaWZ5RGF0ZT0iMjAyMy0wMy0xNVQxODoyNiswNTozMCIgeG1wOk1ldGFkYXRhRGF0ZT0iMjAyMy0wMy0xNVQxODoyNiswNTozMCIgZGM6Zm9ybWF0PSJpbWFnZS9wbmciIHBob3Rvc2hvcDpDb2xvck1vZGU9IjMiIHBob3Rvc2hvcDpJQ0NQcm9maWxlPSJzUkdCIElFQzYxOTY2LTIuMSIgeG1wTU06SW5zdGFuY2VJRD0ieG1wLmlpZDo5MWZmMzE4NS1jNTg0LTY3NGMtOTU2ZS03NzJkODI3MDI5N2QiIHhtcE1NOkRvY3VtZW50SUQ9ImFkb2JlOmRvY2lkOnBob3Rvc2hvcDowNzBhMTIxNi05MDc1LTU4NDQtOGU2Ny1kZjI3ZGQ0ZDEyMjQiIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDozNjJkNjdiMC05ZjVkLWQ2NDYtOWI2Ni02NDVkM2YyZDU3MzEiPiA8eG1wTU06SGlzdG9yeT4gPHJkZjpTZXE+IDxyZGY6bGkgc3RFdnQ6YWN0aW9uPSJjcmVhdGVkIiBzdEV2dDppbnN0YW5jZUlEPSJ4bXAuaWlkOjM2MmQ2N2IwLTlmNWQtZDY0Ni05YjY2LTY0NWQzZjJkNTczMSIgc3RFdnQ6d2hlbj0iMjAyMy0wMy0xNVQxODoxMzozNSswNTozMCIgc3RFdnQ6c29mdHdhcmVBZ2VudD0iQWRvYmUgUGhvdG9zaG9wIDIyLjMgKFdpbmRvd3MpIi8+IDxyZGY6bGkgc3RFdnQ6YWN0aW9uPSJzYXZlZCIgc3RFdnQ6aW5zdGFuY2VJRD0ieG1wLmlpZDo5MWZmMzE4NS1jNTg0LTY3NGMtOTU2ZS03NzJkODI3MDI5N2QiIHN0RXZ0OndoZW49IjIwMjMtMDMtMTVUMTg6MjYrMDU6MzAiIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkFkb2JlIFBob3Rvc2hvcCAyMi4zIChXaW5kb3dzKSIgc3RFdnQ6Y2hhbmdlZD0iLyIvPiA8L3JkZjpTZXE+IDwveG1wTU06SGlzdG9yeT4gPC9yZGY6RGVzY3JpcHRpb24+IDwvcmRmOlJERj4gPC94OnhtcG1ldGE+IDw/eHBhY2tldCBlbmQ9InIiPz6IMIcRAABz30lEQVR4nO2deZwcZZ3/P91zBZJJwjUTkgwJ4IGoMMJEYMN6IYFEVkUxIIfXauK6EnH1ty5y3yi6IlEhwQNEbhR1IZAgKC7hkFkcQCMgSsJIyAxXTiCTzPTvj57qqa6u46mq56l6nqc+79erX5l0Vz/1dB3P867vc5UqlQoIIcVg/+ve8X9pvv/o8X88UFZeCCH6Utp9+ty880AIEWC3bzxfq9hf+NruB+SZlzjs9o3nHwGAF762O8WCEEOgHBCiAbuOVvwvGlTpy2bXbzz/yIsUCEK0gHJASEZQ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',
+            blocks: [
+                {
+                    opcode: 'digital_write',
+                    blockType: BlockType.COMMAND,
+                    // text: 'Write Digital Pin [PIN] [ON_OFF]',
+                    text: FormDigitalWrite[the_locale],
+
+                    arguments: {
+                        PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '3',
+                            menu: "digital_pins"
+                        },
+                        ON_OFF: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '0',
+                            menu: "on_off"
+                        }
+                    }
+                },
+                {
+                    opcode: 'pwm_write',
+                    blockType: BlockType.COMMAND,
+                    text: FormPwmWrite[the_locale],
+                    arguments: {
+                        PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '3',
+                            menu: 'pwm_pins'
+                        },
+                        VALUE: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '50',
+                        }
+                    }
+                },
+                '---',
+                {
+                    opcode: 'tone_on',
+                    blockType: BlockType.COMMAND,
+                    text: FormTone[the_locale],
+                    arguments: {
+                        PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '2',
+                            menu: 'digital_pins'
+                        },
+                        FREQ: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: 100,
+                        },
+                        DURATION: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: 50,
+                        }
+                    }
+                },
+
+                '---',
+                {
+                    opcode: 'servo',
+                    blockType: BlockType.COMMAND,
+                    text: FormServo[the_locale],
+                    arguments: {
+                        PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '2',
+                            menu: 'digital_pins'
+                        },
+                        ANGLE: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: 90,
+                        },
+
+                    }
+                },
+                '---',
+                {
+                    opcode: 'analog_read',
+                    blockType: BlockType.REPORTER,
+                    text: FormAnalogRead[the_locale],
+                    arguments: {
+                        PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '0',
+                            menu: 'analog_pins'
+                        },
+                    }
+                },
+                '---',
+                {
+                    opcode: 'digital_read',
+                    blockType: BlockType.REPORTER,
+                    text: FormDigitalRead[the_locale],
+                    arguments: {
+                        PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '2',
+                            menu: 'digital_pins'
+                        },
+                    }
+                },
+                '---',
+                {
+                    opcode: 'sonar_read',
+                    blockType: BlockType.REPORTER,
+                    text: FormSonarRead[the_locale],
+
+            arguments: {
+                        TRIGGER_PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '4',
+                            menu: 'analog_pins'
+                        },
+                        ECHO_PIN: {
+                            type: ArgumentType.NUMBER,
+                            defaultValue: '5',
+                            menu: 'analog_pins'
+                        }
+                    }
+                },
+            ],
+            menus: {
+                digital_pins: {
+                    acceptReporters: true,
+                    items: ['2', '3', '4', '5', '6', '7', '8', '9', '10', '11',
+                    '12', '13']
+
+                },
+                pwm_pins: {
+                    acceptReporters: true,
+                    items: ['3', '5', '6', '9', '10', '11']
+                },
+                analog_pins: {
+                    acceptReporters: true,
+                    items: ['0', '1', '2', '3', '4', '5']
+                },
+
+                mode: {
+                    acceptReporters: true,
+                    items: [{text: "Input", value: '1'}, {text: "Output", value: '2'}]
+                },
+                on_off: {
+                    acceptReporters: true,
+                    items: ['0', '1']
+                }
+            }
+        };
+    }
+
+    // The block handlers
+
+    // command blocks
+
+    digital_write(args) {
+        if (!connected) {
+            if (!connection_pending) {
+                this.connect();
+                connection_pending = true;
+            }
+
+        }
+
+        if (!connected) {
+            let callbackEntry = [this.digital_write.bind(this), args];
+            wait_open.push(callbackEntry);
+        } else {
+            let pin = args['PIN'];
+            pin = parseInt(pin, 10);
+
+            if (pin_modes[pin] !== DIGITAL_OUTPUT) {
+                pin_modes[pin] = DIGITAL_OUTPUT;
+                msg = {"command": "set_mode_digital_output", "pin": pin};
+                msg = JSON.stringify(msg);
+                window.socket.send(msg);
+            }
+            let value = args['ON_OFF'];
+            value = parseInt(value, 10);
+            msg = {"command": "digital_write", "pin": pin, "value": value};
+            msg = JSON.stringify(msg);
+            window.socket.send(msg);
+        }
+    }
+
+    //pwm
+    pwm_write(args) {
+        if (!connected) {
+            if (!connection_pending) {
+                this.connect();
+                connection_pending = true;
+            }
+        }
+
+        if (!connected) {
+            let callbackEntry = [this.pwm_write.bind(this), args];
+            wait_open.push(callbackEntry);
+        } else {
+            let pin = args['PIN'];
+            // maximum value for RPi and Arduino
+            let the_max = 255;
+            pin = parseInt(pin, 10);
+
+            let value = args['VALUE'];
+            value = parseInt(value, 10);
+
+            // calculate the value based on percentage
+            value = the_max * (value / 100);
+            value = Math.round(value);
+            if (pin_modes[pin] !== PWM) {
+                pin_modes[pin] = PWM;
+                msg = {"command": "set_mode_pwm", "pin": pin};
+                msg = JSON.stringify(msg);
+                window.socket.send(msg);
+            }
+            msg = {"command": "pwm_write", "pin": pin, "value": value};
+            msg = JSON.stringify(msg);
+            window.socket.send(msg);
+
+        }
+    }
+
+    tone_on(args) {
+        if (!connected) {
+            if (!connection_pending) {
+                this.connect();
+                connection_pending = true;
+            }
+        }
+
+        if (!connected) {
+            let callbackEntry = [this.tone_on.bind(this), args];
+            wait_open.push(callbackEntry);
+        } else {
+            let pin = args['PIN'];
+            pin = parseInt(pin, 10);
+            let freq = args['FREQ'];
+            freq = parseInt(freq, 10);
+            let duration = args['DURATION'];
+            duration = parseInt(duration, 10);
+            // make sure duration maximum is 5 seconds
+            if (duration > 5000) {
+                duration = 5000;
+            }
+
+
+            if (pin_modes[pin] !== TONE) {
+                pin_modes[pin] = TONE;
+                msg = {"command": "set_mode_tone", "pin": pin};
+                msg = JSON.stringify(msg);
+                window.socket.send(msg);
+            }
+            msg = {"command": "play_tone", "pin": pin, 'freq': freq, 'duration': duration};
+            msg = JSON.stringify(msg);
+            window.socket.send(msg);
+
+        }
+    }
+
+    // move servo
+    servo(args) {
+        if (!connected) {
+            if (!connection_pending) {
+                this.connect();
+                connection_pending = true;
+            }
+        }
+        if (!connected) {
+            let callbackEntry = [this.servo.bind(this), args];
+            wait_open.push(callbackEntry);
+        } else {
+            let pin = args['PIN'];
+            pin = parseInt(pin, 10);
+            let angle = args['ANGLE'];
+            angle = parseInt(angle, 10);
+
+
+            if (pin_modes[pin] !== SERVO) {
+                pin_modes[pin] = SERVO;
+                msg = {"command": "set_mode_servo", "pin": pin};
+                msg = JSON.stringify(msg);
+                window.socket.send(msg);
+            }
+            msg = {
+                'command': 'servo_position', "pin": pin,
+                'position': angle
+            };
+            msg = JSON.stringify(msg);
+            window.socket.send(msg);
+
+        }
+    }
+
+    // reporter blocks
+    analog_read(args) {
+        if (!connected) {
+            if (!connection_pending) {
+                this.connect();
+                connection_pending = true;
+            }
+        }
+        if (!connected) {
+            let callbackEntry = [this.analog_read.bind(this), args];
+            wait_open.push(callbackEntry);
+        } else {
+            let pin = args['PIN'];
+            pin = parseInt(pin, 10);
+
+            if (pin_modes[pin] !== ANALOG_INPUT) {
+                pin_modes[pin] = ANALOG_INPUT;
+                msg = {"command": "set_mode_analog_input", "pin": pin};
+                msg = JSON.stringify(msg);
+                window.socket.send(msg);
+            }
+            return analog_inputs[pin];
+
+        }
+    }
+
+    digital_read(args) {
+        if (!connected) {
+            if (!connection_pending) {
+                this.connect();
+                connection_pending = true;
+            }
+        }
+        if (!connected) {
+            let callbackEntry = [this.digital_read.bind(this), args];
+            wait_open.push(callbackEntry);
+        } else {
+            let pin = args['PIN'];
+            pin = parseInt(pin, 10);
+
+            if (pin_modes[pin] !== DIGITAL_INPUT) {
+                pin_modes[pin] = DIGITAL_INPUT;
+                msg = {"command": "set_mode_digital_input", "pin": pin};
+                msg = JSON.stringify(msg);
+                window.socket.send(msg);
+            }
+            return digital_inputs[pin];
+
+        }
+    }
+
+    sonar_read(args) {
+        if (!connected) {
+            if (!connection_pending) {
+                this.connect();
+                connection_pending = true;
+            }
+        }
+        if (!connected) {
+            let callbackEntry = [this.sonar_read.bind(this), args];
+            wait_open.push(callbackEntry);
+        } else {
+            let trigger_pin = args['TRIGGER_PIN'];
+            trigger_pin = parseInt(trigger_pin, 10);
+            sonar_report_pin = trigger_pin;
+            let echo_pin = args['ECHO_PIN'];
+            echo_pin = parseInt(echo_pin, 10);
+
+
+            if (pin_modes[trigger_pin] !== SONAR) {
+                pin_modes[trigger_pin] = SONAR;
+                msg = {"command": "set_mode_sonar", "trigger_pin": trigger_pin, "echo_pin": echo_pin};
+                msg = JSON.stringify(msg);
+                window.socket.send(msg);
+            }
+            return analog_inputs[sonar_report_pin];
+
+        }
+    }
+
+    // end of block handlers
+
+    _setLocale () {
+        let now_locale = '';
+        switch (formatMessage.setup().locale){
+            case 'pt-br':
+            case 'pt':
+                now_locale='pt-br';
+                break;
+            case 'en':
+                now_locale='en';
+                break;
+            case 'fr':
+                now_locale='fr';
+                break;
+            case 'zh-tw':
+                now_locale= 'zh-tw';
+                break;
+            case 'zh-cn':
+                now_locale= 'zh-cn';
+                break;
+            case 'pl':
+                now_locale= 'pl';
+                break;
+            case 'ja':
+                now_locale= 'ja';
+                break;
+            case 'de':
+                now_locale= 'de';
+                break;
+            default:
+                now_locale='en';
+                break;
+        }
+        return now_locale;
+    }
+
+    // helpers
+    connect() {
+        if (connected) {
+            // ignore additional connection attempts
+            return;
+        } else {
+            connect_attempt = true;
+            window.socket = new WebSocket("ws://127.0.0.1:9000");
+            msg = JSON.stringify({"id": "to_arduino_gateway"});
+        }
+
+
+        // websocket event handlers
+        window.socket.onopen = function () {
+
+            digital_inputs.fill(0);
+            analog_inputs.fill(0);
+            pin_modes.fill(-1);
+            // connection complete
+            connected = true;
+            connect_attempt = true;
+            // the message is built above
+            try {
+                //ws.send(msg);
+                window.socket.send(msg);
+
+            } catch (err) {
+                // ignore this exception
+            }
+            for (let index = 0; index < wait_open.length; index++) {
+                let data = wait_open[index];
+                data[0](data[1]);
+            }
+        };
+
+        window.socket.onclose = function () {
+            digital_inputs.fill(0);
+            analog_inputs.fill(0);
+            pin_modes.fill(-1);
+            if (alerted === false) {
+                alerted = true;
+                alert(FormWSClosed[the_locale]);}
+            connected = false;
+        };
+
+        // reporter messages from the board
+        window.socket.onmessage = function (message) {
+            msg = JSON.parse(message.data);
+            let report_type = msg["report"];
+            let pin = null;
+            let value = null;
+
+            // types - digital, analog, sonar
+            if (report_type === 'digital_input') {
+                pin = msg['pin'];
+                pin = parseInt(pin, 10);
+                value = msg['value'];
+                digital_inputs[pin] = value;
+            } else if (report_type === 'analog_input') {
+                pin = msg['pin'];
+                pin = parseInt(pin, 10);
+                value = msg['value'];
+                analog_inputs[pin] = value;
+            } else if (report_type === 'sonar_data') {
+                value = msg['value'];
+                digital_inputs[sonar_report_pin] = value;
+            }
+        };
+    }
+
+
+}
+
+module.exports = Scratch3ArduinoOneGPIO;
